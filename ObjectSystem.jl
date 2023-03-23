@@ -24,4 +24,4 @@ function new(class, args...)
         error("Cannot instantiate Nothing")
     end
 end
-
+ .
