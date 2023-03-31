@@ -2,61 +2,59 @@
 #Qustions to prof: what should the Object class contain?, What is the hiarchy of classes? What is the difference between Class and Object?
 # How should GenericFunction have slots? How can MultiMethod have slots?
 
-abstract type Class end
-
-struct MetaClass 
+mutable struct Instance
     name::Symbol
-    direct_superclasses::Vector{MetaClass}
-    direct_slots::Vector
+    slots::Dict{Symbol, Any}
+    instance_of::Any
 end
 
-struct Instance
-    class::MetaClass
-    slotvalues::Dict{Any, Any} 
-    slots::Array
-end
-
-Object = MetaClass(:Object, [], [])
-
-struct MultiMethod
-    name::Symbol
-    specializers::Vector
-    procedure::Function #NOT SURE ABOUT THIS 
-    generic_function::GenericFunction
-    #body
-end
-
-struct GenericFunction
-    name::Symbol
-    args::Vector{Symbol}
-    methods::Vector{MultiMethod} 
-end
-
-GenericFunction.slots
+Class = Instance(:Class, Dict{Symbol, Any}(), nothing)
+Class.slots[:direct_slots] = [:name, :direct_superclasses, :direct_slots]
+setfield!(Class, :instance_of, Class)
+Top = Instance(:Top, Dict{Symbol, Any}(), Class)
+Object = Instance(:Object, Dict{Symbol, Any}(), Class)
+Class.slots[:direct_superclasses] = [Object]
+Object.slots[:direct_superclasses] = [Top]
 
 #functions
-function create_class(name::Symbol, superclasses::Vector, slots::Vector{Symbol})
+function create_class(name::Symbol, superclasses::Vector, slots_for_instances::Vector{Symbol})
     if isempty(superclasses)
         push!(superclasses, Object)
     end
-    return MetaClass(name, superclasses, slots)
+    slots = Dict{Symbol, Any}()
+    direct_slots = getfield(Class, :slots)[:direct_slots]
+
+    slots[direct_slots[1]] = name
+    slots[direct_slots[2]] = superclasses
+    slots[direct_slots[3]] = slots_for_instances
+    return Instance(name, slots, Class)
 end
 
-function new(name::MetaClass, ;kwargs...)
-    slotvalues = Dict{Any, Any}()
-    slots = []
-    for arg in kwargs
-        slotvalues[arg[1]] = arg[2]
-        push!(slots, arg[1])
+function new(class::Instance, ;kwargs...)
+    slots_from_class = getfield(class, :slots)[:direct_slots]
+    slots = Dict{Symbol, Any}()
+    for (first, second) in kwargs
+        if first in slots_from_class
+            slots[first] = second
+        else
+            error("ERROR: Slot $(first) is missing\n...")
+        end
     end
-    return Instance(name,slotvalues,slots)
+    return Instance(:nothing, slots, class)
 end
 
-function Base.getproperty(name::Instance,slot::Symbol)
-    all_slots = getfield(name,:slotvalues)
-    if haskey(all_slots, slot)
-        if !isnothing(all_slots[slot])
-            return all_slots[slot]
+function Base.getproperty(instance::Instance, get::Symbol)
+    all_slots = getfield(instance,:slots)
+    if get == :slots
+        if haskey(all_slots, :direct_slots)
+            return all_slots[:direct_slots]
+        else
+            error("ERROR: Slot $(slot) is missing\n...")
+        end
+    end
+    if haskey(all_slots, get)
+        if !isnothing(all_slots[get])
+            return all_slots[get]
         else
             error("ERROR: Slot $(slot) is unbound\n...")
         end
@@ -64,22 +62,45 @@ function Base.getproperty(name::Instance,slot::Symbol)
         error("ERROR: Slot $(slot) is missing\n...")
     end
 end
+Class.slots
+ComplexNumber = create_class(:ComplexNumber, [], [:real, :imag])
+ComplexNumber.direct_slots
 
-function Base.setproperty!(name::Instance, slot::Symbol, Val::Any)
-    all_slots = getfield(name,:slotvalues)
-    if haskey(all_slots, slot)
-        all_slots[slot] = Val
+function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
+    all_slots = getfield(instance,:slots)
+    if haskey(all_slots, set)
+        all_slots[set] = val
     else
         error("ERROR: Slot $(slot) is missing\n...")
     end
 end
+ComplexNumber = create_class(:ComplexNumber, [], [:real, :imag])
+c1 = new(ComplexNumber, real=5, imag=2)
+c1.real
+c1.real = 10
+c1.real
+
+GenericFunction = Instance(:GenericFunction, Dict{Symbol, Any}(),[:name, :methods, :args], Class)
+gen_func_slots = getfield(GenericFunction, :slots)
+gen_func_slots[:direct_superclasses] = [Object]
+GenericFunction.slots
+
+MultiMethod = Instance(:MultiMethod, Dict{Symbol, Any}(),[:specializers, :procedure, :generic_function], Class)
+multi_method_slots = getfield(MultiMethod, :slots)
+multi_method_slots[:direct_superclasses] = [Object]
+MultiMethod.slots
 #####################################
 
 # THIS DOES NOT ALLOW MULTIPLE FUNCTIONS WITH THE SAME NAME BUT DIFFERENT NUMBER OF ARGUMENTS
 gen_functions = Dict{Symbol, GenericFunction}()
 
-function make_generic(name::Symbol,params)
-    gen_func = GenericFunction(name,params,MultiMethod[])
+function make_generic(name::Symbol, args...)
+    slots = Dict{Symbol, Any}()
+    object_slots = getfield(GenericFunction, :slots_for_instance)
+    slots[1] = name
+    slots[2] = []
+    slots[3] = length(args)
+    gen_func = Instance(name, Dict{Symbol, Any}(), slots, :GenericFunction)
     gen_functions[name] = gen_func
     return gen_func
 end
