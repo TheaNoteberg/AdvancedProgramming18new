@@ -1,5 +1,3 @@
-#structs
-
 mutable struct Instance
     slots::Dict{Symbol, Any}
 end
@@ -37,9 +35,6 @@ function new(class::Instance, ;kwargs...)
     return Instance(slots)
 end
 
-#ComplexNumber = new(Class, name=:ComplexNumber, direct_superclasses=[Object], direct_slots=[:real, :imag])
-#c1 = new(ComplexNumber, real=5, imag=2)
-
 macro defclass(classname, superclasses, slots)
     quote
         $(esc(classname)) = new(Class, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots=$(map(x->x, slots.args)))
@@ -49,13 +44,7 @@ end
 @defclass(ComplexNumber, [], [real, imag])
 
 GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args])
-
-macro defgeneric(genericname, args...)
-    quote
-        $(esc(genericname)) = new(GenericFunction, name=$(QuoteNode(genericname)), methods=[], number_of_args =$(length(args)))
-    end
-end 
-
+MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:specializers, :procedure, :generic_function])
 macro defgeneric(x)
     if x.head==:call
         name = x.args[1]
@@ -67,33 +56,48 @@ macro defgeneric(x)
         error("ERROR: defgeneric must be called with a function name and arguments\n...")
     end
 end
+@defgeneric add(a, b)
 
-macro defmethod(x)
-    if x.head == :call
-        name = x.args[1].args[1]
-        specializers = x.args[1].args[2:end]
-        procedure = x.args[2]
-    end
-    if !isdefined(Main, name)
-        
-    end
-    if (getfield(name, :instance_of) == GenericFunction && getfield(name, :number_of_args) == length(x.args[2:end]))
-        quote
-            $(esc(name)) = new(MultiMethod, specializers=$args, procedure=$(esc(x)), generic_function=$(esc(name)))
-        end       
+function (g::Instance)(args...)
+    slots = getfield(g, :slots) 
+    if slots[:instance_of] === GenericFunction
+        procedure = getfield(slots[:methods][1], :slots)[:procedure]
+        return procedure(args...)
+        #for method in slots[:methods]
+        #    if check_args(method, args)
+        #        return method.procedure(args...)
+        #    end
+        #end
+        #error("ERROR: No method for $(g) with arguments $(args)\n...")
     else
-        error("ERROR: defmethod must be called with a function name and arguments\n...")
+        error("ERROR: $(g) is not a generic function\n...")
     end
 end
 
-add = new(GenericFunction, name=:add, methods=[], number_of_args=2)
-add1 = new(MultiMethod, specializers=[Int, Int], procedure=(a, b) -> a + b, generic_function=add)
-#@defmethod add(a::ComplexNumber, b::ComplexNumber) = new(ComplexNumber, real=(a.real + b.real), imag=(a.imag + b.imag))
+macro defmethod(x)
+    pairs = []
+    for i in 2:length(x.args[1].args)
+        push!(pairs, Pair(x.args[1].args[i].args[1], x.args[1].args[i].args[2]))
+    end
+    specializers = Tuple(pairs)
+    name_symbol = x.args[1].args[1]
+    name = name_symbol
+    procedure = x.args[2].args[2]
+    args = Tuple([first for (first, _) in specializers])
 
-
-@defgeneric add(a, b)
-macro defmethod()
-    
+    return quote
+        !@isdefined($(name_symbol)) && @defgeneric $(name)($(args...))
+        if typeof($(name_symbol)) != Instance || getfield($(name_symbol), :slots)[:instance_of] != GenericFunction
+            error("ERROR: $(name_symbol) is not a generic function\n...")
+        end
+        slots = getfield($(name), :slots)
+        function lambda($(args...))
+            $(procedure)
+        end
+        if getfield($(name), :slots)[:number_of_args] == length($specializers)
+            push!(slots[:methods], new(MultiMethod, specializers=$specializers, procedure=lambda, generic_function=$(name)))    
+        end
+    end
 end
 
 function Base.getproperty(instance::Instance, get::Symbol)
@@ -157,38 +161,4 @@ end
 
 function class_of(inst::Instance)
     return getfield(inst, :slots)[:instance_of]
-end
-
-function create_class(inst::Instance, superclasses::Vector, slots::Vector)
-    for slot in slots
-        
-        for direct_slot in slot
-            if isa(direct_slot, Symbol)
-                #skapa field med namn direct_slot
-                continue
-            end
-            
-            if direct_slot[1] == :reader
-                #skapa reader med namn direct_slot[2]
-                new()
-                continue
-            end
-            if direct_slot[1] == :writer
-                #skapa writer med namn direct_slot[2]
-                continue
-            end
-            if direct_slot[1] == :initform
-                #sätt field slots[1] till direct_slot[2]
-                continue
-            end
-            # skapa field med namn direct_slot[1] och initform direct_slot[2]
-
-            
-        end
-      
-    end
-    if 
-
-
-    #new_class = new(Class, name=inst, direct_superclasses=superclasses, direct_slots=slots)
 end
