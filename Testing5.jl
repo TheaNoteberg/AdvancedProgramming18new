@@ -73,7 +73,6 @@ macro defclass(classname, superclasses, slots)
 end
 
 @defclass(ComplexNumber, [], [real, imag])
-ComplexNumber.direct_superclasses == [Object]
 
 GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args])
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:specializers, :procedure, :generic_function])
@@ -93,27 +92,35 @@ end
 function (inst::Instance)(args...)
     slots = getfield(inst, :slots) 
     if slots[:instance_of] === GenericFunction
-        procedure = getfield(slots[:methods][1], :slots)[:procedure]
-        # [:specializers, :procedure, :generic_function]
-        for method in slots[:methods]
-            if check_args(method, args...)
-                return method.procedure(args...)
-            end
+        find_applicable_methods(slots[:methods], args...)
+        applicable_methods = find_applicable_methods(slots[:methods], args...)
+        if length(applicable_methods) == 0
+            return no_applicable_method(inst, args...)
         end
-        error("ERROR: No method for $(g) with arguments $(args)\n...")
+        procedure = applicable_methods[1]
         return procedure(args...)
     else
         error("ERROR: $(g) is not a generic function\n...")
     end
 end
 
+function no_applicable_method(gf, args...)
+    error("ERROR: No applicable method for function $(gf) with arguments $(args)\n...")
+end
+
 macro defmethod(x)
     pairs = []
+    function_head = x.args[1]
     for i in 2:length(x.args[1].args)
-        push!(pairs, Pair(x.args[1].args[i].args[1], x.args[1].args[i].args[2]))
+        param = function_head.args[i]
+        if isa(param, Symbol)
+            push!(pairs, Pair(param, Top))
+        else
+            push!(pairs, Pair(param.args[1], param.args[2]))
+        end
     end
     specializers = Tuple(pairs)
-    name_symbol = x.args[1].args[1]
+    name_symbol = function_head.args[1]
     name = name_symbol
     procedure = x.args[2].args[2]
     args = Tuple([first for (first, _) in specializers])
@@ -155,7 +162,7 @@ function compute_cpl(class::Instance)
     end
     return visited
 end
-
+ 
 function is_more_specific(method1::Instance, method2::Instance, args)
     for i in eachindex(args)
         class1 = method1.specializers[i].second
@@ -174,7 +181,7 @@ function find_applicable_methods(methods::Array, args...)
     for method in methods
         applicable = true
         for i in eachindex(args)
-            cpl = compute_cpl(args[i])
+            cpl = compute_cpl(class_of(args[i]))
             class = method.specializers[i].second
             if !(class in cpl)
                 applicable = false
@@ -188,6 +195,16 @@ function find_applicable_methods(methods::Array, args...)
 	return sort(applicable_methods, lt=(x,y)->is_more_specific(x, y, args))
 end
 
+c1 = new(ComplexNumber, real=1, imag=2)
+
+@defgeneric print_object(obj, io)
+@defmethod print_object(obj::Object, io) =
+print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
+@defmethod print_object(c::ComplexNumber, io) =
+print(io, "$(c.real)$(c.imag < 0 ? "-" : "+")$(abs(c.imag))i")
+Base.show(io::IO, inst::Instance) = print_object(inst, io)
+
+c1
 @defclass(A, [], [])
 @defclass(B, [], [])
 @defclass(C, [], [])
@@ -198,3 +215,9 @@ end
 for x in compute_cpl(F)
     println(getfield(x, :slots)[:name])
 end
+#=
+quote
+    #= c:\Users\johan\pava\AdvancedProgramming18new\Testing5.jl:84 =#
+    print_object = Main.new(Main.GenericFunction, name = :print_object, methods = [], number_of_args = 2)
+end
+=#
