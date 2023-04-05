@@ -1,6 +1,24 @@
 mutable struct Instance
     slots::Dict{Symbol, Any}
 end
+# Gets the class precedence list with BFS
+function compute_cpl(class::Instance)
+    visited = []
+    queue = [class]
+    push!(visited, class)
+    while !isempty(queue)
+        node = queue[1]
+        deleteat!(queue, 1)
+        neighbors = getfield(node, :slots)[:direct_superclasses]
+        for neighbor in neighbors
+            if !(neighbor in visited)
+                push!(queue, neighbor)
+                push!(visited, neighbor)
+            end
+        end
+    end
+    return visited
+end
 
 Class = Instance(Dict{Symbol, Any}())
 Class.slots[:name] = :Class
@@ -11,6 +29,7 @@ Top = Instance(Dict{Symbol, Any}())
 Top.slots[:name] = :Top
 Top.slots[:instance_of] = Class
 Top.slots[:direct_superclasses] = []
+Top.slots[:cpl] = [Top]
 
 Object = Instance(Dict{Symbol, Any}())
 Object.slots[:name] = :Object
@@ -18,6 +37,8 @@ Object.slots[:instance_of] = Class
 
 Class.slots[:direct_superclasses] = [Object]
 Object.slots[:direct_superclasses] = [Top]
+Class.slots[:cpl] = compute_cpl(Class)
+Object.slots[:cpl] = compute_cpl(Object)
 
 function Base.getproperty(instance::Instance, get::Symbol)
     all_slots = getfield(instance,:slots)
@@ -49,72 +70,44 @@ function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
 end
 
 function new(class::Instance, ;kwargs...)
-    slots_from_class = getfield(class, :slots)[:direct_slots]
-    slotnames = [x[1] for x in slots_from_class]
+    println("enter new")
     slots = Dict{Symbol, Any}()
+    instance = Instance(slots)
+    slotnames = []
+    if haskey(getfield(class, :slots), :cpl)
+        superclasses = getfield(class, :slots)[:cpl]
+        for superclass in superclasses
+            if haskey(getfield(superclass, :slots), :direct_slots)
+                println("direct slots ", superclass.direct_slots)
+                for super_slot in superclass.direct_slots
+                    if !isa(super_slot, Symbol)
+                        slots[super_slot[1]] = super_slot[2]
+                        push!(slotnames, super_slot[1])
+                    else
+                        slots[super_slot] = missing
+                        push!(slotnames, super_slot)
+                    end                    
+                end
+            end
+        end        
+    end
     for (first, second) in kwargs
         if first in slotnames
             slots[first] = second
-            if first == :direct_superclasses && class == Class && isempty(second) #TODO: what to do with undouble class??
-                slots[first] = [Object]
+            if first == :direct_superclasses
+                if isempty(second)
+                    slots[first] = [Object]
+                end
+                slots[:cpl] = compute_cpl(instance)
             end
         else
             error("ERROR: Slot $(first) is missing\n...")
         end
     end
-    for slot in slots_from_class
-        if !haskey(slots, slot[1])
-            slots[slot[1]] = slot[2]
-        end
-    end
-    
     slots[:instance_of] = class
-    return Instance(slots)
+    
+    return instance
 end
-
-macro defclass(classname, superclasses, slots, metaClass=Class)
-    init_slots = Vector{Pair}()
-    methods_to_define = []
-    for slot in slots.args
-        if !isa(slot, Vector)
-            slot = [slot]
-        end
-        slot_name = slot[1]
-        if !isa(slot_name, Pair)
-            slot_pair = Pair(slot_name, missing)
-        else
-            slot_pair = Pair(slot_name.args[1], slot_name.args[2])
-            slot_name = slot_name.args[1]
-        end
-        for i in 2:length(slot)
-            if slot.args[i].args[1] == :reader
-                push!(methods_to_define, :(@defmethod $(slot.args[i].args[2])(o::$(classname)) = o.$(slot_name)))            
-            end
-            if slot.args[i].args[1] == :writer
-                push!(methods_to_define, :(@defmethod $(slot.args[i].args[2])(o::$(classname), v) = o.$(slot_name) = v))
-            end
-            if slot.args[i].args[1] == :initform
-                init_slots[slot_name.args[1]] = slot.args[i].args[2]
-            end
-        end
-        push!(init_slots, slot_pair)
-    end
-    quote        
-        $(esc(classname)) = new($metaClass, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots=$(map(x->x, init_slots)))
-    end
-end
-
-@defclass(ComplexNumber, [], [real, imag])
-ComplexNumber.direct_slots
-
-c1.real
-c2 = new(ComplexNumber, real=3)
-c2.real
-c2.imag
-# Use Metaclass
-# @defclass(BuiltInClass, [Class], [])
-# @defclass(_Int64, [BuiltInClass], [])
-# @defclass(_String, [BuiltInClass], [])
 
 GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args])
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:name, :specializers, :procedure, :generic_function])
@@ -166,6 +159,60 @@ end
 @defmethod no_applicable_method(gf::GenericFunction, args) = error("ERROR: No applicable method for function $(gf) with arguments $(args)\n...")
 
 
+macro defclass(classname, superclasses, slots, metaClass=Class)
+    init_slots = Vector{Pair}()
+    methods_to_define = []
+    for slot in slots.args
+        if isa(slot, Symbol)
+            slot = [slot]
+        else
+            slot = convert(Array, slot.args)
+        end
+        slot_name = slot[1]
+        if isa(slot_name, Symbol)
+            slot_pair = Pair(slot_name, missing)
+        else
+            slot_pair = Pair(slot_name.args[1], slot_name.args[2])
+            slot_name = slot_name.args[1]
+        end
+        for j in eachindex(slot[2:end])
+            i = j+1
+            if slot[i].args[1] == :reader
+                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname)) = o.$(slot_name)))            
+            end
+            if slot[i].args[1] == :writer
+                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname), v) = o.$(slot_name) = v))
+            end
+            if slot[i].args[1] == :initform
+                slot_pair = Pair(slot_name, slot[i].args[2])
+            end
+        end
+        push!(init_slots, slot_pair)
+    end
+    quote        
+        $(esc(classname)) = new($metaClass, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots=$(map(x->x, init_slots)))
+        if !isempty($methods_to_define)
+            $(esc.(methods_to_define)...)
+        end
+            
+    end
+end
+
+@defclass(ComplexNumber, [], [[real=3, reader=get_real], [imag, initform=2, writer=set_imag!]])
+ComplexNumber.direct_slots
+c1 = new(ComplexNumber)
+c1.real
+c1.imag
+set_imag!(c1, 5)
+c1.imag
+c2 = new(ComplexNumber, real=3)
+c2.real
+c2.imag
+
+@defclass(BuiltInClass, [Class], [])
+@defclass(_Int64, [], [], metaClass=BuiltInClass)
+@defclass(_String, [], [], metaClass=BuiltInClass)
+
 function (inst::Instance)(args...)
     slots = getfield(inst, :slots)
     if slots[:instance_of] === GenericFunction        
@@ -197,24 +244,7 @@ function class_of(inst::Any)
     return Top
 end
 
-# Gets the class precedence list with BFS
-function compute_cpl(class::Instance)
-    visited = []
-    queue = [class]
-    push!(visited, class)
-    while !isempty(queue)
-        node = queue[1]
-        deleteat!(queue, 1)
-        neighbors = getfield(node, :slots)[:direct_superclasses]
-        for neighbor in neighbors
-            if !(neighbor in visited)
-                push!(queue, neighbor)
-                push!(visited, neighbor)
-            end
-        end
-    end
-    return visited
-end
+
  
 function is_more_specific(method1::Instance, method2::Instance, args)
     for i in eachindex(args)
