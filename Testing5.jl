@@ -70,15 +70,13 @@ function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
 end
 
 function new(class::Instance, ;kwargs...)
-    println("enter new")
     slots = Dict{Symbol, Any}()
     instance = Instance(slots)
     slotnames = []
     if haskey(getfield(class, :slots), :cpl)
-        superclasses = getfield(class, :slots)[:cpl]
+        superclasses = reverse(getfield(class, :slots)[:cpl]) # Going from Top in order to take the values from more specific classes
         for superclass in superclasses
             if haskey(getfield(superclass, :slots), :direct_slots)
-                println("direct slots ", superclass.direct_slots)
                 for super_slot in superclass.direct_slots
                     if !isa(super_slot, Symbol)
                         slots[super_slot[1]] = super_slot[2]
@@ -199,7 +197,6 @@ macro defclass(classname, superclasses, slots, metaClass=Class)
 end
 
 @defclass(ComplexNumber, [], [[real=3, reader=get_real], [imag, initform=2, writer=set_imag!]])
-ComplexNumber.direct_slots
 c1 = new(ComplexNumber)
 c1.real
 c1.imag
@@ -212,6 +209,8 @@ c2.imag
 @defclass(BuiltInClass, [Class], [])
 @defclass(_Int64, [], [], metaClass=BuiltInClass)
 @defclass(_String, [], [], metaClass=BuiltInClass)
+
+class_of(1)
 
 function (inst::Instance)(args...)
     slots = getfield(inst, :slots)
@@ -228,23 +227,47 @@ function (inst::Instance)(args...)
     end
 end
 
-function class_of(inst::Instance)
-    return getfield(inst, :slots)[:instance_of]
-end
 
-function class_of(inst::Int)
-    return _Int64
-end
-
-function class_of(inst::String)
-    return _String
-end
-
+###
+### Get-Functions
+###
 function class_of(inst::Any)
+    if typeof(inst) == Instance
+        return inst.instance_of
+    if typeof(inst) == Int
+        return _Int64
+    if typeof(inst) == String
+        return _String
     return Top
 end
 
+function class_name(inst::Instance)
+    return inst.name
+end
 
+function class_direct_slots(inst::Instance)
+    return inst.direct_slots
+end
+
+function class_slots(inst::Instance)
+    error("ERROR: class_slots not implemented\n...")
+end
+
+function class_direct_superclasses(inst::Instance)
+    return inst.direct_superclasses
+end
+
+function class_cpl(inst::Instance)
+    return inst.cpl
+end
+
+function generic_methods(inst::Instance)
+    return inst.methods
+end
+
+function method_specializers(inst::Instance)
+    return inst.specializers
+end
  
 function is_more_specific(method1::Instance, method2::Instance, args)
     for i in eachindex(args)
@@ -294,4 +317,6 @@ c3.real
 print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
 @defmethod print_object(c::ComplexNumber, io) =
 print(io, "$(c.real)$(c.imag < 0 ? "-" : "+")$(abs(c.imag))i")
+@defmethod print_object(class::Class, io) =
+print(io, "<$(class_name(class_of(class))) $(class_name(class))>")
 Base.show(io::IO, inst::Instance) = print_object(inst, io)
