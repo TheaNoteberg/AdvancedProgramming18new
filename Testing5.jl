@@ -45,27 +45,16 @@ function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
     all_slots[set] = val
 end
 
-function new(class::Instance, ;kwargs...)
+function new(class; kwargs...)
     slots = Dict{Symbol, Any}()
     instance = Instance(slots)
-    if haskey(getfield(class, :slots), :slots_init_values)
-        # reverse to prioritize the values from classes that are more specific
-        slots_from_class = class.slots
-        slots_init_values = class.slots_init_values
-        println(slots_from_class)
-        for i in eachindex(slots_from_class)
-            if (haskey(slots_init_values, slots_from_class[i]))
-                slots[slots_from_class[i]] = slots_init_values[slots_from_class[i]]
-            end
-        end
-    end
-    
     for (key, val) in kwargs
         slots[key] = val
     end
     slots[:instance_of] = class
     instance
 end
+
 GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args], slots=[:name, :methods, :number_of_args, :instance_of], current_gen_fun_being_called=[])
 GenericFunction.cpl = [GenericFunction, Object, Top]
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:name, :specializers, :procedure, :generic_function], slots=[:name, :specializers, :procedure, :generic_function, :instance_of])
@@ -105,7 +94,7 @@ macro defmethod(x)
     name_symbol = function_head.args[1]
     name = name_symbol
     procedure = x.args[2].args
-    return quote
+    quote
         !@isdefined($(name_symbol)) && @defgeneric $(name)($(args...))
         if typeof($(name_symbol)) != Instance || getfield($(name_symbol), :slots)[:instance_of] != GenericFunction
             error("ERROR: $(name_symbol) is not a generic function\n...")
@@ -149,7 +138,7 @@ function find_applicable_methods(methods::Array, args...)
             push!(applicable_methods, method)
         end
 	end
-	return sort(applicable_methods, lt=(x,y)->is_more_specific(x, y, args))
+	sort(applicable_methods, lt=(x,y)->is_more_specific(x, y, args))
 end
 function (inst::Instance)(args...)
     slots = getfield(inst, :slots)
@@ -182,25 +171,23 @@ function call_next_method()
     end
     next_method = popfirst!(methods)
     procedure = next_method.procedure
-    return procedure(args...)
+    procedure(args...)
 end
 
 @defmethod compute_cpl(class::Class) = begin
-        visited = []
-        queue = [class]
-        push!(visited, class)
-        while !isempty(queue)
-            node = queue[1]
-            deleteat!(queue, 1)
-            neighbors = getfield(node, :slots)[:direct_superclasses]
-            for neighbor in neighbors
-                if !(neighbor in visited)
-                    push!(queue, neighbor)
-                    push!(visited, neighbor)
-                end
+    visited = [class]
+    queue = [class]
+    while !isempty(queue)
+        node = popfirst!(queue)
+        neighbors = getfield(node, :slots)[:direct_superclasses]
+        for neighbor in neighbors
+            if !(neighbor in visited)
+                push!(queue, neighbor)
+                push!(visited, neighbor)
             end
         end
-        return visited
+    end
+    visited
 end
 
 ###
@@ -256,26 +243,65 @@ end
     init_values = Dict{Symbol, Any}()
     for cpl_class in class_cpl(class)
         if (haskey(getfield(cpl_class, :slots), :direct_slots_init_values))
-            init_values = merge!(class_direct_slots_init_values(cpl_class),init_values)
+            init_values = merge!(init_values, class_direct_slots_init_values(cpl_class))
         end
     end
     init_values
 end
 
-function make_class(class::Instance, ;kwargs...)
-    inst = new(class, ;kwargs...)
-    if isempty(inst.direct_superclasses)
-        setproperty!(inst, :direct_superclasses, [Object])
-    end    
-    setproperty!(inst, :cpl, compute_cpl(inst))
-    setproperty!(inst, :slots, compute_slots(inst))
-    init_values = compute_slots_init_values(inst)
 
-    if !isempty(init_values)
-        setproperty!(inst, :slots_init_values, init_values)
+
+@defmethod allocate_instance(class::Class) = begin
+    inst = Instance(Dict{Symbol, Any}(:instance_of => class))
+    slots = getfield(inst, :slots)
+    if haskey(getfield(class, :slots), :slots_init_values)
+        slots_from_class = class.slots
+        slots_init_values = class.slots_init_values
+        for i in eachindex(slots_from_class)
+            if (haskey(slots_init_values, slots_from_class[i]))
+                slots[slots_from_class[i]] = slots_init_values[slots_from_class[i]]
+            end
+        end
     end
-    inst
+    inst    
 end
+
+@defmethod initialize(object::Object, initargs) = begin
+    for (first, second) in initargs
+        setproperty!(object, first, second)
+    end
+end
+@defmethod initialize(class::Class, initargs) = begin
+    for (first, second) in initargs
+        setproperty!(class, first, second)
+    end
+    if isempty(class.direct_superclasses)
+        setproperty!(class, :direct_superclasses, [Object])
+    end    
+    setproperty!(class, :cpl, compute_cpl(class))
+    setproperty!(class, :slots, compute_slots(class))
+
+    init_values = compute_slots_init_values(class)
+    if !isempty(init_values)
+        setproperty!(class, :slots_init_values, init_values)
+    end
+end
+@defmethod initialize(generic::GenericFunction, initargs) = begin
+    for (first, second) in initargs
+        setproperty!(generic, first, second)
+    end
+end
+@defmethod initialize(method::MultiMethod, initargs) = begin
+    for (first, second) in initargs
+        setproperty!(method, first, second)
+    end
+end
+
+new(class; initargs...) =
+    let instance = allocate_instance(class)
+        initialize(instance, initargs)
+        instance
+    end
 
 macro defclass(classname, superclasses, slots, metaClass=missing)
     if ismissing(metaClass)
@@ -319,7 +345,7 @@ macro defclass(classname, superclasses, slots, metaClass=missing)
             init_values[$(direct_slot_names)[i]] = $(direct_init_values)[i]
         end
 
-        $(esc(classname)) = make_class($metaClass, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots_init_values=init_values, direct_slots=$(map(x->x, direct_slot_names)))
+        $(esc(classname)) = new($metaClass, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots_init_values=init_values, direct_slots=$(map(x->x, direct_slot_names)))
         if !isempty($methods_to_define)
             $(esc.(methods_to_define)...)
         end
