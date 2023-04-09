@@ -52,8 +52,11 @@ function new(class::Instance, ;kwargs...)
         # reverse to prioritize the values from classes that are more specific
         slots_from_class = class.slots
         slots_init_values = class.slots_init_values
-        for i in eachindex(slots_from_class) 
-            slots[slots_from_class[i]] = slots_init_values[slots_from_class[i]]
+        println(slots_from_class)
+        for i in eachindex(slots_from_class)
+            if (haskey(slots_init_values, slots_from_class[i]))
+                slots[slots_from_class[i]] = slots_init_values[slots_from_class[i]]
+            end
         end
     end
     
@@ -63,7 +66,7 @@ function new(class::Instance, ;kwargs...)
     slots[:instance_of] = class
     instance
 end
-GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args], slots=[:name, :methods, :number_of_args, :instance_of])
+GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args], slots=[:name, :methods, :number_of_args, :instance_of], current_gen_fun_being_called=[])
 GenericFunction.cpl = [GenericFunction, Object, Top]
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:name, :specializers, :procedure, :generic_function], slots=[:name, :specializers, :procedure, :generic_function, :instance_of])
 MultiMethod.cpl = [MultiMethod, Object, Top]
@@ -112,7 +115,7 @@ macro defmethod(x)
             $((procedure)...)
         end
         if getfield($(name), :slots)[:number_of_args] == length($specializers)
-            push!(slots[:methods], new(MultiMethod, name=missing, specializers=[$(map(esc, specializers)...)], procedure=lambda, generic_function=$(name)))    
+            pushfirst!(slots[:methods], new(MultiMethod, name=missing, specializers=[$(map(esc, specializers)...)], procedure=lambda, generic_function=$(name)))    
         end
     end
 end
@@ -155,12 +158,11 @@ function (inst::Instance)(args...)
         if length(applicable_methods) == 0
             return no_applicable_method(inst, args)
         end
-        return applicable_methods[1].procedure(args...)
-        setproperty!(GenericFunction, :current_gen_fun_being_called, inst)
+        push!(GenericFunction.current_gen_fun_being_called, inst)
         setproperty!(inst, :current_args, args)
         setproperty!(inst, :current_methods, applicable_methods)
         res = call_next_method()
-        delete!(getfield(GenericFunction, :slots), :current_gen_fun_being_called)
+        pop!(GenericFunction.current_gen_fun_being_called)
         delete!(slots, :current_args)
         delete!(slots, :current_methods)
         return res
@@ -172,17 +174,15 @@ end
 @defmethod no_applicable_method(gf::GenericFunction, args) = error("ERROR: No applicable method for function $(gf) with arguments $(args)\n...")
 
 function call_next_method()
-    gen_fun_being_called = GenericFunction.current_gen_fun_being_called
+    gen_fun_being_called = GenericFunction.current_gen_fun_being_called[end]
     args = gen_fun_being_called.current_args
     methods = gen_fun_being_called.current_methods
     if length(methods) == 0
         return no_applicable_method(gen_fun_being_called, args)
     end
-    next_method = methods[1]
+    next_method = popfirst!(methods)
     procedure = next_method.procedure
-    res = procedure(args...)
-    deleteat!(methods, 1)
-    return res
+    return procedure(args...)
 end
 
 @defmethod compute_cpl(class::Class) = begin
@@ -292,7 +292,6 @@ macro defclass(classname, superclasses, slots, metaClass=missing)
         else
             slot = [slot]
         end
-        println(slot)
         slot_name = slot[1]
         if isa(slot_name, Expr)
             push!(direct_init_values, slot_name.args[2])
@@ -304,18 +303,16 @@ macro defclass(classname, superclasses, slots, metaClass=missing)
         for j in eachindex(slot[2:end])
             i = j+1
             if slot[i].args[1] == :reader
-                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname)) = o.$(slot_name.value)))
+                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname)) = o.$(slot_name)))
             end
             if slot[i].args[1] == :writer
-                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname), v) = o.$(slot_name.value) = v))
+                push!(methods_to_define, :(@defmethod $(slot[i].args[2])(o::$(classname), v) = o.$(slot_name) = v))
             end
             if slot[i].args[1] == :initform
                 direct_init_values[end] = slot[i].args[2]
             end
         end
     end
-    
-    direct_slot_names = [n.value for n in direct_slot_names]
     quote
         init_values = Dict{Symbol, Any}()
         for i in eachindex($(esc.(direct_slot_names)))
@@ -329,7 +326,6 @@ macro defclass(classname, superclasses, slots, metaClass=missing)
             
     end
 end
-
 @defclass(BuiltInClass, [Class], [])
 @defclass(_Int64, [], [], metaClass=BuiltInClass)
 @defclass(_String, [], [], metaClass=BuiltInClass)
@@ -341,72 +337,12 @@ print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
 print(io, "<$(class_name(class_of(class))) $(class_name(class))>")
 Base.show(io::IO, inst::Instance) = print_object(inst, io)
 
-
-@defclass(ComplexNumber, [Object], [[:real=2], :imag])
-@defmethod print_object(c::ComplexNumber, io) =
-print(io, "$(c.real)$(c.imag < 0 ? "-" : "+")$(abs(c.imag))i")
-
+# TODO add print_object for generic_methods(draw)
+#=Should look like this: [<MultiMethod draw(ColorMixin, Device)>, <MultiMethod draw(Circle, Printer)>,
+<MultiMethod draw(Line, Printer)>, <MultiMethod draw(Circle, Screen)>,
+<MultiMethod draw(Line, Screen)>]=#
 
 
 #########################################
 #########################################
 #########################################
-
-new(class; initargs...) =
-    let instance = allocate_instance(class)
-        initialize(instance, initargs)
-        instance
-    end
-
-@defmethod allocate_instance(class::Class) = Instance(Dict{Symbol, Any}())
-@defmethod allocate_instance(class::CountingClass) = begin
-    class.counter += 1
-    call_next_method()
-end
-
-@defmethod initialize(object::Object, initargs) = begin
-    for (first, second) in initargs
-        setproperty!(object, first, second)
-    end
-end
-@defmethod initialize(class::Class, initargs) = begin
-    for (first, second) in initargs
-        setproperty!(class, first, second)
-    end 
-end
-@defmethod initialize(generic::GenericFunction, initargs) = begin
-    for (first, second) in initargs
-        setproperty!(generic, first, second)
-    end
-end
-@defmethod initialize(method::MultiMethod, initargs) = begin
-    for (first, second) in initargs
-        setproperty!(method, first, second)
-    end
-end
-
-
-
-@defclass(AvoidCollisionsClass, [Class], [])
-
-@defmethod compute_slots(class::AvoidCollisionsClass) =
-let slots = call_next_method(),
-    duplicates = symdiff(slots, unique(slots))
-    isempty(duplicates) ?
-    slots :
-    error("Multiple occurrences of slots: $(join(map(string, duplicates), ", "))")
-end
-
-@defclass(CountingClass, [Class], [counter=0])
-
-###
-### FlavorsClass
-###
-@defclass(FlavorsClass, [Class], [])
-
-@defmethod compute_cpl(class::FlavorsClass) =
-let depth_first_cpl(class) =
-    [class, foldl(vcat, map(depth_first_cpl, class_direct_superclasses(class)), init=[])...],
-    base_cpl = [Object, Top]
-    vcat(unique(filter(!in(base_cpl), depth_first_cpl(class))), base_cpl)
-end
