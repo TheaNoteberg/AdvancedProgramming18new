@@ -41,18 +41,15 @@ function Base.getproperty(instance::Instance, get::Symbol)
 end
 
 function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
-    all_slots = getfield(instance,:slots)
-    all_slots[set] = val
+    getfield(instance,:slots)[set] = val
 end
 
 function new(class; kwargs...)
-    slots = Dict{Symbol, Any}()
-    instance = Instance(slots)
+    slots = Dict{Symbol, Any}(:instance_of => class)
     for (key, val) in kwargs
         slots[key] = val
     end
-    slots[:instance_of] = class
-    instance
+    Instance(slots)
 end
 
 GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args], slots=[:name, :methods, :number_of_args, :instance_of], current_gen_fun_being_called=[])
@@ -114,12 +111,11 @@ function is_more_specific(method1::Instance, method2::Instance, args)
         class1 = method1.specializers[i]
         class2 = method2.specializers[i]
         if  class1 != class2
-            actual_class = class_of(args[i])
-            precedence_list = actual_class.cpl
-            return findfirst(x -> x == class1, precedence_list) < findfirst(x -> x == class2, precedence_list)
+            arg_class = class_of(args[i])
+            return findfirst(x -> x == class1, arg_class.cpl) < findfirst(x -> x == class2, arg_class.cpl)
         end
     end
-    return true
+    true
 end
 
 function find_applicable_methods(methods::Array, args...)
@@ -367,8 +363,3 @@ Base.show(io::IO, inst::Instance) = print_object(inst, io)
 #=Should look like this: [<MultiMethod draw(ColorMixin, Device)>, <MultiMethod draw(Circle, Printer)>,
 <MultiMethod draw(Line, Printer)>, <MultiMethod draw(Circle, Screen)>,
 <MultiMethod draw(Line, Screen)>]=#
-
-
-#########################################
-#########################################
-#########################################
