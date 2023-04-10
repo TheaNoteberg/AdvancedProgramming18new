@@ -393,8 +393,6 @@ end
 print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
 @defmethod print_object(class::Class, io) =
 print(io, "<$(class_name(class_of(class))) $(class_name(class))>")
+@defmethod print_object(method::MultiMethod, io) =
+print(io, "<$(class_name(class_of(method))) $(class_name(method.generic_function))($((join([s.name for s in method.specializers], ", "))...))>")
 Base.show(io::IO, inst::Instance) = print_object(inst, io)
-# TODO add print_object for generic_methods(draw)
-#=Should look like this: [<MultiMethod draw(ColorMixin, Device)>, <MultiMethod draw(Circle, Printer)>,
-<MultiMethod draw(Line, Printer)>, <MultiMethod draw(Circle, Screen)>,
-<MultiMethod draw(Line, Screen)>]=#
