@@ -5,8 +5,8 @@ end
 Class = Instance(Dict{Symbol, Any}())
 Class.slots[:name] = :Class
 Class.slots[:instance_of] = Class
-Class.slots[:direct_slots] = [:name, :direct_superclasses, :direct_slots, :cpl, :instance_of]
-Class.slots[:slots] = [:name, :direct_superclasses, :direct_slots, :cpl, :instance_of]
+Class.slots[:direct_slots] = [:name, :direct_superclasses, :slots, :slots_init_values, :direct_slots, :direct_slots_init_values, :cpl, :instance_of]
+Class.slots[:slots] = [:name, :direct_superclasses, :slots, :slots_init_values, :direct_slots, :direct_slots_init_values, :cpl, :instance_of]
 
 Top = Instance(Dict{Symbol, Any}())
 Top.slots[:name] = :Top
@@ -52,7 +52,7 @@ function new(class; kwargs...)
     Instance(slots)
 end
 
-GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args], slots=[:name, :methods, :number_of_args, :instance_of], current_gen_fun_being_called=[])
+GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object], direct_slots=[:name, :methods, :number_of_args, :instance_of, :current_args, :current_methods], slots=[:name, :methods, :number_of_args, :instance_of, :current_args, :current_methods], current_gen_fun_being_called=[])
 GenericFunction.cpl = [GenericFunction, Object, Top]
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:name, :specializers, :procedure, :generic_function], slots=[:name, :specializers, :procedure, :generic_function, :instance_of])
 MultiMethod.cpl = [MultiMethod, Object, Top]
@@ -61,7 +61,7 @@ macro defgeneric(x)
         name = x.args[1]
         args = x.args[2:end]
         quote
-            $(esc(name)) = new(GenericFunction, name=$(esc(QuoteNode(name))), methods=[], number_of_args =$(length(args)))
+            $(esc(name)) = new(GenericFunction, name=$(esc(QuoteNode(name))), methods=[], number_of_args =$(length(args)), current_args=[], current_methods=[])
         end
     else
         error("ERROR: defgeneric must be called with a function name and arguments\n...")
@@ -101,7 +101,7 @@ macro defmethod(x)
             $((procedure)...)
         end
         if getfield($(name), :slots)[:number_of_args] == length($specializers)
-            pushfirst!(slots[:methods], new(MultiMethod, name=missing, specializers=[$(map(esc, specializers)...)], procedure=lambda, generic_function=$(name)))    
+            pushfirst!(slots[:methods], new(MultiMethod, name=missing, specializers=[$(map(esc, specializers)...)], procedure=lambda, generic_function=$(name)))
         end
     end
 end
@@ -123,7 +123,7 @@ function find_applicable_methods(methods::Array, args...)
     for method in methods
         applicable = true
         for i in eachindex(args)
-            cpl = class_of(args[i]).cpl
+            cpl = class_cpl(class_of(args[i]))
             class = method.specializers[i]
             if !(class in cpl)
                 applicable = false
@@ -143,13 +143,12 @@ function (inst::Instance)(args...)
         if length(applicable_methods) == 0
             return no_applicable_method(inst, args)
         end
-        push!(GenericFunction.current_gen_fun_being_called, inst)
-        setproperty!(inst, :current_args, args)
-        setproperty!(inst, :current_methods, applicable_methods)
+        current_gen_fun_being_called = getfield(GenericFunction, :slots)[:current_gen_fun_being_called]
+        push!(current_gen_fun_being_called, inst)
+        getfield(inst, :slots)[:current_args] = args
+        getfield(inst, :slots)[:current_methods] = applicable_methods
         res = call_next_method()
-        pop!(GenericFunction.current_gen_fun_being_called)
-        delete!(slots, :current_args)
-        delete!(slots, :current_methods)
+        pop!(current_gen_fun_being_called)
         return res
     else
         error("ERROR: $(inst) is not a generic function\n...")
@@ -159,9 +158,9 @@ end
 @defmethod no_applicable_method(gf::GenericFunction, args) = error("ERROR: No applicable method for function $(gf) with arguments $(args)\n...")
 
 function call_next_method()
-    gen_fun_being_called = GenericFunction.current_gen_fun_being_called[end]
-    args = gen_fun_being_called.current_args
-    methods = gen_fun_being_called.current_methods
+    gen_fun_being_called = getfield(GenericFunction, :slots)[:current_gen_fun_being_called][end]
+    args = getfield(gen_fun_being_called, :slots)[:current_args]
+    methods = getfield(gen_fun_being_called, :slots)[:current_methods]
     if length(methods) == 0
         return no_applicable_method(gen_fun_being_called, args)
     end
@@ -191,7 +190,7 @@ end
 ###
 function class_of(inst::Any)
     if typeof(inst) == Instance
-        return inst.instance_of
+        return getfield(inst, :slots)[:instance_of]
     end
     if typeof(inst) == Int
         return _Int64
@@ -203,35 +202,35 @@ function class_of(inst::Any)
 end
 
 function class_name(inst::Instance)
-    inst.name
+    getfield(inst, :slots)[:name]
 end
 
 function class_direct_slots(inst::Instance)
-    inst.direct_slots
+    getfield(inst, :slots)[:direct_slots]
 end
 
 function class_direct_slots_init_values(inst::Instance)
-    inst.direct_slots_init_values
+    getfield(inst, :slots)[:direct_slots_init_values]
 end
 
 function class_slots(inst::Instance)
-    inst.slots
+    getfield(inst, :slots)[:slots]
 end
 
 function class_direct_superclasses(inst::Instance)
-    inst.direct_superclasses
+    getfield(inst, :slots)[:direct_superclasses]
 end
 
 function class_cpl(inst::Instance)
-    inst.cpl
+    getfield(inst, :slots)[:cpl]
 end
 
 function generic_methods(inst::Instance)
-    inst.methods
+    getfield(inst, :slots)[:methods]
 end
 
 function method_specializers(inst::Instance)
-    inst.specializers
+    getfield(inst, :slots)[:specializers]
 end
 
 @defmethod compute_slots(class::Class) = vcat(map(class_direct_slots, class_cpl(class))...)
@@ -245,7 +244,43 @@ end
     init_values
 end
 
+@defmethod compute_getter_and_setter(class::Class, slot_name, idx) = begin
+    (
+        (inst) -> begin
+            getfield(inst, :slots)[slot_name]
+        end,
+        (inst, value) -> begin
+            getfield(inst, :slots)[slot_name] = value
+        end
+    )
+end
 
+function set_getters_and_setters(inst)
+    getters = Dict()
+    setters = Dict()
+    for slot in [inst.slots..., :instance_of]
+        (getter, setter) = compute_getter_and_setter(inst, slot, missing)
+        getters[slot] = getter
+        setters[slot] = setter
+    end
+    getfield(inst, :slots)[:getters] = getters
+    getfield(inst, :slots)[:setters] = setters
+end
+set_getters_and_setters(Class)
+set_getters_and_setters(Top)
+set_getters_and_setters(Object)
+set_getters_and_setters(GenericFunction)
+set_getters_and_setters(MultiMethod)
+
+Base.getproperty(inst::Instance, slot_name::Symbol) = begin
+    instance_of = getfield(inst, :slots)[:instance_of]
+    getfield(instance_of, :slots)[:getters][slot_name](inst)
+end
+
+Base.setproperty!(inst::Instance, slot_name::Symbol, val) = begin
+    instance_of = getfield(inst, :slots)[:instance_of]
+    getfield(instance_of, :slots)[:setters][slot_name](inst, val)
+end
 
 @defmethod allocate_instance(class::Class) = begin
     inst = Instance(Dict{Symbol, Any}(:instance_of => class))
@@ -273,7 +308,7 @@ end
     end
     if isempty(class.direct_superclasses)
         setproperty!(class, :direct_superclasses, [Object])
-    end    
+    end
     setproperty!(class, :cpl, compute_cpl(class))
     setproperty!(class, :slots, compute_slots(class))
 
@@ -281,6 +316,7 @@ end
     if !isempty(init_values)
         setproperty!(class, :slots_init_values, init_values)
     end
+    set_getters_and_setters(class)
 end
 @defmethod initialize(generic::GenericFunction, initargs) = begin
     for (first, second) in initargs
@@ -358,7 +394,6 @@ print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
 @defmethod print_object(class::Class, io) =
 print(io, "<$(class_name(class_of(class))) $(class_name(class))>")
 Base.show(io::IO, inst::Instance) = print_object(inst, io)
-
 # TODO add print_object for generic_methods(draw)
 #=Should look like this: [<MultiMethod draw(ColorMixin, Device)>, <MultiMethod draw(Circle, Printer)>,
 <MultiMethod draw(Line, Printer)>, <MultiMethod draw(Circle, Screen)>,
