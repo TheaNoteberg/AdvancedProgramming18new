@@ -1,3 +1,4 @@
+# Everything is an instance
 mutable struct Instance
     slots::Dict{Symbol, Any}
 end
@@ -27,6 +28,7 @@ Object.slots[:direct_superclasses] = [Top]
 Class.slots[:cpl] = [Class, Top]
 Object.slots[:cpl] = [Object, Top]
 
+# Functions to redefine the getproperty and setproperty! functions
 function Base.getproperty(instance::Instance, get::Symbol)
     all_slots = getfield(instance,:slots)
     if haskey(all_slots, get)
@@ -44,6 +46,7 @@ function Base.setproperty!(instance::Instance, set::Symbol, val::Any)
     getfield(instance,:slots)[set] = val
 end
 
+# First definition of new - for generic functions and methods
 function new(class; kwargs...)
     slots = Dict{Symbol, Any}(:instance_of => class)
     for (key, val) in kwargs
@@ -56,6 +59,8 @@ GenericFunction = new(Class, name=:GenericFunction, direct_superclasses=[Object]
 GenericFunction.cpl = [GenericFunction, Object, Top]
 MultiMethod = new(Class, name=:MultiMethod, direct_superclasses=[Object], direct_slots=[:name, :specializers, :procedure, :generic_function], slots=[:name, :specializers, :procedure, :generic_function, :instance_of])
 MultiMethod.cpl = [MultiMethod, Object, Top]
+
+# Macro that allows the user to define a generic function with a name and number of arguments
 macro defgeneric(x)
     if x.head==:call
         name = x.args[1]
@@ -68,9 +73,10 @@ macro defgeneric(x)
     end
 end
 
+# Macro that allows the user to define a method for a generic function (creates a generic fun if it doesn't exist)
 macro defmethod(x)
-    args = []
-    specializers = []
+    args = [] # Holds the names of the arguments
+    specializers = [] # Holds the type of the arguments
     function_head = x.args[1]
     for i in 2:length(function_head.args)
         param = function_head.args[i]
@@ -106,6 +112,7 @@ macro defmethod(x)
     end
 end
 
+# Returns true if method1 is more specific than method2
 function is_more_specific(method1::Instance, method2::Instance, args)
     for i in eachindex(args)
         class1 = method1.specializers[i]
@@ -118,6 +125,7 @@ function is_more_specific(method1::Instance, method2::Instance, args)
     true
 end
 
+# Return all applicable methods of the methods list with the given arguments (sorted by specificity)
 function find_applicable_methods(methods::Array, args...)
     applicable_methods = []
     for method in methods
@@ -136,6 +144,8 @@ function find_applicable_methods(methods::Array, args...)
 	end
 	sort(applicable_methods, lt=(x,y)->is_more_specific(x, y, args))
 end
+
+# Allows generic functions to be callable - runs the most specific applicable method first
 function (inst::Instance)(args...)
     slots = getfield(inst, :slots)
     if slots[:instance_of] === GenericFunction
@@ -143,8 +153,10 @@ function (inst::Instance)(args...)
         if length(applicable_methods) == 0
             return no_applicable_method(inst, args)
         end
+        # Store the generic function geing called in order to use it for call_next_method
         current_gen_fun_being_called = getfield(GenericFunction, :slots)[:current_gen_fun_being_called]
         push!(current_gen_fun_being_called, inst)
+        #Also store the args and applicable methods
         getfield(inst, :slots)[:current_args] = args
         getfield(inst, :slots)[:current_methods] = applicable_methods
         res = call_next_method()
@@ -157,6 +169,7 @@ end
 
 @defmethod no_applicable_method(gf::GenericFunction, args) = error("ERROR: No applicable method for function $(gf) with arguments $(args)\n...")
 
+# Function to allow a multimethod to call the next method in the applicable_methods list
 function call_next_method()
     gen_fun_being_called = getfield(GenericFunction, :slots)[:current_gen_fun_being_called][end]
     args = getfield(gen_fun_being_called, :slots)[:current_args]
@@ -169,6 +182,7 @@ function call_next_method()
     procedure(args...)
 end
 
+# Class precendence list with BFS
 @defmethod compute_cpl(class::Class) = begin
     visited = [class]
     queue = [class]
@@ -233,6 +247,7 @@ function method_specializers(inst::Instance)
     getfield(inst, :slots)[:specializers]
 end
 
+# Methods to get the slots and initial values of all classes in the cpl
 @defmethod compute_slots(class::Class) = vcat(map(class_direct_slots, class_cpl(class))...)
 @defmethod compute_slots_init_values(class::Class) = begin
     init_values = Dict{Symbol, Any}()
@@ -244,6 +259,7 @@ end
     init_values
 end
 
+# Define getter and setter functions as lambda functions for a slot
 @defmethod compute_getter_and_setter(class::Class, slot_name, idx) = begin
     (
         (inst) -> begin
@@ -255,6 +271,7 @@ end
     )
 end
 
+# Creates getters and setters for all slots
 function set_getters_and_setters(inst)
     getters = Dict()
     setters = Dict()
@@ -272,6 +289,7 @@ set_getters_and_setters(Object)
 set_getters_and_setters(GenericFunction)
 set_getters_and_setters(MultiMethod)
 
+# Redefine getproperty and setproperty! to use the getters and setters of the class
 Base.getproperty(inst::Instance, slot_name::Symbol) = begin
     instance_of = getfield(inst, :slots)[:instance_of]
     getfield(instance_of, :slots)[:getters][slot_name](inst)
@@ -282,6 +300,7 @@ Base.setproperty!(inst::Instance, slot_name::Symbol, val) = begin
     getfield(instance_of, :slots)[:setters][slot_name](inst, val)
 end
 
+# Allocates the instance with the initial values
 @defmethod allocate_instance(class::Class) = begin
     inst = Instance(Dict{Symbol, Any}(:instance_of => class))
     slots = getfield(inst, :slots)
@@ -297,6 +316,7 @@ end
     inst    
 end
 
+# Initializes for the different types of instances
 @defmethod initialize(object::Object, initargs) = begin
     for (first, second) in initargs
         setproperty!(object, first, second)
@@ -329,12 +349,14 @@ end
     end
 end
 
+# Redefine new to run allocate_instance and initialize
 new(class; initargs...) =
     let instance = allocate_instance(class)
         initialize(instance, initargs)
         instance
     end
 
+# Macro to define a class 
 macro defclass(classname, superclasses, slots, metaClass=missing)
     if ismissing(metaClass)
         metaClass = :Class
@@ -380,14 +402,16 @@ macro defclass(classname, superclasses, slots, metaClass=missing)
         $(esc(classname)) = new($metaClass, name=$(QuoteNode(classname)), direct_superclasses=$superclasses, direct_slots_init_values=init_values, direct_slots=$(map(x->x, direct_slot_names)))
         if !isempty($methods_to_define)
             $(esc.(methods_to_define)...)
-        end
-            
+        end            
     end
 end
+
+# Defines the classes for Int and String
 @defclass(BuiltInClass, [Class], [])
 @defclass(_Int64, [], [], metaClass=BuiltInClass)
 @defclass(_String, [], [], metaClass=BuiltInClass)
 
+# Defines print-methods for different kinds of instances
 @defgeneric print_object(obj, io)
 @defmethod print_object(obj::Object, io) =
 print(io, "<$(class_name(class_of(obj))) $(string(objectid(obj), base=62))>")
